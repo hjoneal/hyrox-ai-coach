@@ -1,0 +1,10 @@
+pandas
+scikit-learn
+xgboost
+langchain
+langgraph
+openai
+chromadb
+streamlit
+beautifulsoup4
+requests
