@@ -6,15 +6,32 @@ from datetime import timedelta
 import logging
 import re
 import time
+import os
+from typing import List, Optional
 from tqdm import tqdm
+
+from src.ingestion.events import HyroxEventConfig, Division
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class HyroxScraper:
-    def __init__(self, season="season-8"):
-        self.base_url = f"https://results.hyrox.com/{season}/"
+    def __init__(self, season: int = 8):
+        """
+        Initialize the Hyrox scraper.
+
+        Args:
+            season: Season number (e.g., 5, 6, 8)
+        """
+        self.season = season
+        self.base_url = f"https://results.hyrox.com/season-{season}/"
         self.session = requests.Session()
+        self._init_session()
+
+    def set_season(self, season: int):
+        """Switch to a different season."""
+        self.season = season
+        self.base_url = f"https://results.hyrox.com/season-{season}/"
         self._init_session()
 
     def _init_session(self):
@@ -158,9 +175,14 @@ class HyroxScraper:
                     if not link_tag: continue
                     
                     href = link_tag['href']
-                    profile_link = f"https://results.hyrox.com{href}" if href.startswith("/") else href
-                    if not profile_link.startswith("http"):
-                        profile_link = f"https://results.hyrox.com/{self.session.cookies.get('season', 'season-8')}/{href}"
+                    # Construct profile link using current base_url
+                    if href.startswith("http"):
+                        profile_link = href
+                    elif href.startswith("/"):
+                        profile_link = f"https://results.hyrox.com{href}"
+                    else:
+                        # Relative URL - append to base_url
+                        profile_link = f"{self.base_url}{href}"
 
                     # 2. Get Name (Try a few common classes)
                     name = "Unknown"
@@ -191,22 +213,138 @@ class HyroxScraper:
 
         return pd.DataFrame(all_participants)
 
+    def scrape_multiple_events(
+        self,
+        events: List[HyroxEventConfig],
+        division: Division = Division.OPEN,
+        output_dir: str = "data/raw/events",
+        save_intermediate: bool = True
+    ) -> pd.DataFrame:
+        """
+        Scrape multiple events with progress tracking and resumability.
+
+        Args:
+            events: List of HyroxEventConfig objects to scrape
+            division: Division to scrape (default: Open)
+            output_dir: Directory for intermediate saves
+            save_intermediate: Whether to save each event separately
+
+        Returns:
+            Combined DataFrame with all participants from all events
+        """
+        if save_intermediate:
+            os.makedirs(output_dir, exist_ok=True)
+
+        all_data = []
+        failed_events = []
+
+        for event in tqdm(events, desc="Scraping events"):
+            # Check if we already have this event scraped
+            safe_name = event.name.replace(" ", "_").replace("/", "-")
+            event_file = os.path.join(output_dir, f"{safe_name}.csv")
+
+            if save_intermediate and os.path.exists(event_file):
+                logging.info(f"Loading cached data for {event.name}")
+                df = pd.read_csv(event_file)
+                all_data.append(df)
+                continue
+
+            # Switch season if needed
+            if self.season != event.season:
+                self.set_season(event.season)
+
+            # Build full event ID with division prefix
+            full_event_id = f"{division.value}_{event.event_id}"
+
+            try:
+                logging.info(f"Scraping {event.name} (ID: {full_event_id})")
+                df = self.scrape_event(full_event_id)
+
+                if df.empty:
+                    logging.warning(f"No data returned for {event.name}")
+                    failed_events.append(event.name)
+                    continue
+
+                # Add event metadata
+                df["event_name"] = event.name
+                df["season"] = event.season
+                df["location"] = event.location
+
+                # Validate data
+                df = self._validate_event_data(df)
+
+                all_data.append(df)
+
+                # Save intermediate results
+                if save_intermediate:
+                    df.to_csv(event_file, index=False)
+                    logging.info(f"Saved {len(df)} rows to {event_file}")
+
+            except Exception as e:
+                logging.error(f"Failed to scrape {event.name}: {e}")
+                failed_events.append(event.name)
+                continue
+
+        if failed_events:
+            logging.warning(f"Failed events: {failed_events}")
+
+        if not all_data:
+            logging.error("No data scraped from any event")
+            return pd.DataFrame()
+
+        combined = pd.concat(all_data, ignore_index=True)
+        logging.info(f"Total participants scraped: {len(combined)}")
+
+        return combined
+
+    def _validate_event_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Validate and clean scraped event data.
+
+        Args:
+            df: Raw scraped DataFrame
+
+        Returns:
+            Cleaned DataFrame with invalid rows removed
+        """
+        original_len = len(df)
+
+        # Check for required columns
+        required_cols = ["run_1", "station_1", "total_time"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            logging.warning(f"Missing columns: {missing_cols}")
+            return df
+
+        # Remove rows with missing critical data
+        df = df.dropna(subset=["total_time"])
+
+        # Remove rows where total_time is zero or negative
+        # (timedelta strings that start with "0 days 00:00:00")
+        df = df[df["total_time"] != "0 days 00:00:00"]
+
+        removed = original_len - len(df)
+        if removed > 0:
+            logging.info(f"Removed {removed} invalid rows")
+
+        return df
+
+
 if __name__ == "__main__":
-    # Test with the Event ID you found
-    scraper = HyroxScraper(season="season-8")
-    target_event = "H_LR3MS4JI11FA" # Stockholm Open
-    
-    print(f"🚀 Starting test scrape for: {target_event}")
+    # Test single event scraping
+    scraper = HyroxScraper(season=8)
+    target_event = "H_LR3MS4JI11FA"  # Stockholm Open
+
+    print(f"Starting test scrape for: {target_event}")
     df = scraper.scrape_event(target_event, limit_pages=1)
-    
+
     if not df.empty:
-        print(f"✅ Success! Scraped {len(df)} rows.")
-        # Print columns to verify we have run_1, station_1, etc.
-        print(df.columns)
+        print(f"Success! Scraped {len(df)} rows.")
+        print(df.columns.tolist())
         print(df.head(2))
-        
+
         output_file = "data/raw/test_scrape_v2.csv"
         df.to_csv(output_file, index=False)
-        print(f"💾 Saved to {output_file}")
+        print(f"Saved to {output_file}")
     else:
-        print("❌ Still no data. We might need to check the link construction.")
+        print("No data returned. Check the event ID and connection.")
