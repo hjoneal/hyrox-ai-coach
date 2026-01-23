@@ -1,21 +1,60 @@
+"""
+Hyrox Results Scraper
+
+Scrapes participant data and splits from the official Hyrox results website.
+All times are stored as integers (seconds) for clean data format.
+"""
+
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import numpy as np
-from datetime import timedelta
-import logging
-import re
-import time
 import os
-from typing import List, Optional
+import time
+import logging
+from typing import List, Optional, Dict, Any
 from tqdm import tqdm
 
 from src.ingestion.events import HyroxEventConfig, Division
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging with more detail
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-8s | %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+
+def parse_time_to_seconds(time_str: str) -> int:
+    """
+    Parse time string to seconds.
+
+    Args:
+        time_str: Time in format 'HH:MM:SS', 'MM:SS', or 'H:MM:SS'
+
+    Returns:
+        Integer seconds, or 0 if invalid
+    """
+    if not time_str or time_str.strip() in ('', '-', '–', '--'):
+        return 0
+
+    time_str = time_str.strip()
+
+    try:
+        parts = list(map(int, time_str.split(':')))
+        if len(parts) == 2:  # MM:SS
+            return parts[0] * 60 + parts[1]
+        elif len(parts) == 3:  # HH:MM:SS
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    except (ValueError, AttributeError):
+        pass
+
+    return 0
+
 
 class HyroxScraper:
+    """Scraper for Hyrox competition results."""
+
     def __init__(self, season: int = 8):
         """
         Initialize the Hyrox scraper.
@@ -35,182 +74,257 @@ class HyroxScraper:
         self._init_session()
 
     def _init_session(self):
+        """Initialize HTTP session."""
         try:
-            self.session.get(self.base_url)
-            logging.info(f"Session initialized with {self.base_url}")
+            self.session.get(self.base_url, timeout=10)
+            logger.info(f"Session initialized: season-{self.season}")
         except Exception as e:
-            logging.error(f"Failed to initialize session: {e}")
+            logger.error(f"Failed to initialize session: {e}")
 
-    def get_html(self, url):
+    def _get_html(self, url: str) -> Optional[str]:
+        """Fetch HTML content from URL."""
         try:
-            response = self.session.get(url, timeout=10)
+            response = self.session.get(url, timeout=15)
             response.raise_for_status()
             return response.text
         except requests.RequestException as e:
-            logging.error(f"Error fetching {url}: {e}")
+            logger.error(f"HTTP error: {e}")
             return None
 
-    def parse_time_str(self, time_str):
-        """Converts strings like '00:04:30' or '1:05:00' to Timedelta."""
-        if not time_str or "–" in time_str:
-            return timedelta()
-        try:
-            parts = list(map(int, time_str.split(":")))
-            if len(parts) == 2: # mm:ss
-                return timedelta(minutes=parts[0], seconds=parts[1])
-            elif len(parts) == 3: # hh:mm:ss
-                return timedelta(hours=parts[0], minutes=parts[1], seconds=parts[2])
-        except ValueError:
-            pass
-        return timedelta()
+    def _get_td_text(self, container, class_name: str) -> str:
+        """Extract text from td element with given class."""
+        if not container:
+            return ''
+        td = container.find('td', class_=class_name)
+        if td:
+            # Get text, handling nested spans
+            text = td.get_text(strip=True)
+            return text if text and text not in ('-', '–', '--') else ''
+        return ''
 
-    def parse_splits(self, participant_link):
+    def _get_td_int(self, container, class_name: str) -> int:
+        """Extract integer from td element with given class."""
+        text = self._get_td_text(container, class_name)
+        if not text:
+            return 0
+        try:
+            # Remove common formatting (commas, dots for thousands)
+            cleaned = text.replace(',', '').replace('.', '').strip()
+            return int(cleaned)
+        except ValueError:
+            return 0
+
+    def _get_time_seconds(self, container, class_name: str) -> int:
+        """Extract time as seconds from td element with given class."""
+        text = self._get_td_text(container, class_name)
+        return parse_time_to_seconds(text)
+
+    def parse_participant_details(self, profile_url: str) -> Optional[Dict[str, Any]]:
         """
-        Extracts splits from the Detail Page using the Season 8 CSS classes.
-        Mapping: f-time_0X = Run X, f-time_1X = Station X.
+        Extract all participant data from their detail page.
+
+        Args:
+            profile_url: URL to participant's detail page
+
+        Returns:
+            Dictionary with all participant data, or None if failed
         """
-        html = self.get_html(participant_link)
+        html = self._get_html(profile_url)
         if not html:
             return None
 
         soup = BeautifulSoup(html, 'html.parser')
-        splits = {}
+        data = {}
 
-        # The splits are in a table usually found in the right-hand channel or 'box-other'
-        # We iterate over all table rows to find the specific classes.
-        all_rows = soup.find_all("tr")
+        # =====================================================================
+        # LEFT COLUMN: Participant details from untabbed-boxes
+        # =====================================================================
+
+        # Participant box (#detail-box-general)
+        participant_box = soup.find('div', id='detail-box-general')
+        if participant_box:
+            data['bib_number'] = self._get_td_text(participant_box, 'f-start_no_text')
+            data['age_group'] = self._get_td_text(participant_box, 'f-type_age_class')
+            data['nationality'] = self._get_td_text(participant_box, 'f--nation')
+
+        # Race details box (#detail-box-eventinfo)
+        event_box = soup.find('div', id='detail-box-eventinfo')
+        if event_box:
+            data['division'] = self._get_td_text(event_box, 'f--event')
+
+        # Judging box (#detail-box-judges)
+        judges_box = soup.find('div', id='detail-box-judges')
+        if judges_box:
+            data['bonus_time'] = self._get_time_seconds(judges_box, 'f-gimmick_04')
+            data['penalty_time'] = self._get_time_seconds(judges_box, 'f-gimmick_01')
+            data['disqual_reason'] = self._get_td_text(judges_box, 'f-disqual_reason')
+
+        # Overall results box (#detail-box-totals)
+        totals_box = soup.find('div', id='detail-box-totals')
+        if totals_box:
+            data['rank_overall'] = self._get_td_int(totals_box, 'f-place_all')
+            data['rank_age_group'] = self._get_td_int(totals_box, 'f-place_age')
+            data['overall_time'] = self._get_time_seconds(totals_box, 'f-time_finish_netto')
+
+        # =====================================================================
+        # RIGHT COLUMN: Splits from workout summary
+        # =====================================================================
+
+        all_rows = soup.find_all('tr')
 
         for row in all_rows:
-            # Get the class list of the row (e.g., ['f-time_01', 'list-highlight'])
-            classes = row.get("class", [])
+            classes = row.get('class', [])
             if not classes:
                 continue
 
-            # Check if this row is a time row
-            row_class = next((c for c in classes if c.startswith("f-time_")), None)
-            
-            if row_class:
-                # The value is usually in the second cell (td) with the SAME class
-                # e.g., <td class="f-time_01">00:03:06</td>
-                cells = row.find_all("td")
-                if not cells: continue
-                
-                # Find the cell that has the matching class or is the second cell
-                val_cell = row.find("td", class_=row_class)
-                if not val_cell and len(cells) > 1:
-                    val_cell = cells[0] # Fallback
-                
-                if val_cell:
-                    time_val = self.parse_time_str(val_cell.text.strip())
-                    
-                    # --- MAPPING LOGIC ---
-                    # f-time_01 -> Run 1
-                    # f-time_08 -> Run 8
-                    # f-time_11 -> Station 1 (Ski)
-                    # f-time_18 -> Station 8 (Wallballs)
-                    
-                    suffix = row_class.replace("f-time_", "")
-                    
-                    if suffix.startswith("0"): # Runs
-                        run_num = int(suffix[1])
-                        splits[f"run_{run_num}"] = time_val
-                    
-                    elif suffix.startswith("1"): # Stations
-                        station_num = int(suffix[1])
-                        splits[f"station_{station_num}"] = time_val
-                        
-                    elif suffix == "finish_netto":
-                        splits["total_time"] = time_val
+            # Find time class (e.g., f-time_01, f-time_11, f-time_60)
+            time_class = next((c for c in classes if c.startswith('f-time_')), None)
+            if not time_class:
+                continue
 
-        # Ensure we have data
-        if not splits:
-            logging.warning(f"No splits found for {participant_link}")
+            # Get the time value from td with matching class
+            td = row.find('td', class_=time_class)
+            if not td:
+                continue
+
+            time_seconds = parse_time_to_seconds(td.get_text(strip=True))
+            suffix = time_class.replace('f-time_', '')
+
+            # Map suffix to field name
+            # f-time_01 to f-time_08 = Run 1-8
+            # f-time_11 to f-time_18 = Station 1-8
+            # f-time_49 = Run Total
+            # f-time_50 = Best Run Lap
+            # f-time_60 = Roxzone Time
+
+            if suffix.isdigit():
+                num = int(suffix)
+                if 1 <= num <= 8:  # Runs
+                    data[f'run_{num}'] = time_seconds
+                elif 11 <= num <= 18:  # Stations
+                    data[f'station_{num - 10}'] = time_seconds
+                elif num == 49:
+                    data['total_run'] = time_seconds
+                elif num == 50:
+                    data['best_run_lap'] = time_seconds
+                elif num == 60:
+                    data['roxzone_time'] = time_seconds
+
+        # Calculate totals if not found
+        if 'total_run' not in data:
+            data['total_run'] = sum(data.get(f'run_{i}', 0) for i in range(1, 9))
+
+        if 'total_stations' not in data:
+            data['total_stations'] = sum(data.get(f'station_{i}', 0) for i in range(1, 9))
+
+        # Validate we have actual split data
+        has_runs = any(data.get(f'run_{i}', 0) > 0 for i in range(1, 9))
+        has_stations = any(data.get(f'station_{i}', 0) > 0 for i in range(1, 9))
+
+        if not has_runs and not has_stations:
             return None
 
-        # Calculate Totals for convenience
-        # Note: We use .get() with default 0 timedelta to avoid errors if a split is missing
-        runs = [splits.get(f"run_{i}", timedelta()) for i in range(1, 9)]
-        stations = [splits.get(f"station_{i}", timedelta()) for i in range(1, 9)]
-        
-        splits["total_run"] = sum(runs, timedelta())
-        splits["total_stations"] = sum(stations, timedelta())
-        
-        # If total_time wasn't found in table, sum the parts + roxzone (roxzone is tricky to calculate without direct data, effectively it's Total - (Runs + Stations))
-        if "total_time" not in splits:
-             # Try to find it in the main header if missing
-             pass 
+        return data
 
-        return splits
+    def scrape_event(
+        self,
+        event_id: str,
+        limit_pages: Optional[int] = None
+    ) -> pd.DataFrame:
+        """
+        Scrape all participants from a single event.
 
-    def scrape_event(self, event_id, limit_pages=None):
+        Args:
+            event_id: Event ID (e.g., 'H_LR3MS4JI11FA')
+            limit_pages: Maximum pages to scrape (None for all)
+
+        Returns:
+            DataFrame with all participant data
+        """
         page = 1
         all_participants = []
-        
-        logging.info(f"Starting scrape for Event ID: {event_id}")
+        total_scraped = 0
+
+        logger.info(f"Starting scrape: {event_id}")
 
         while True:
-            url = f"{self.base_url}?page={page}&event={event_id}&num_results=100&pid=list&pidp=start&ranking=time_finish_netto"
-            html = self.get_html(url)
-            if not html: break
-            
-            soup = BeautifulSoup(html, 'html.parser')
-            rows = soup.find_all("li", class_="row")
-            
-            # Filter rows that look like data (have a data-id or detail link)
-            data_rows = []
-            for r in rows:
-                if r.find("a", href=lambda x: x and "content=detail" in x):
-                    data_rows.append(r)
+            url = (
+                f"{self.base_url}?page={page}&event={event_id}"
+                f"&num_results=100&pid=list&pidp=start&ranking=time_finish_netto"
+            )
 
-            if not data_rows:
-                logging.info("No more participant rows found.")
+            html = self._get_html(url)
+            if not html:
                 break
 
-            logging.info(f"Processing Page {page} with {len(data_rows)} participants...")
+            soup = BeautifulSoup(html, 'html.parser')
 
-            for row in data_rows:
+            # Find participant rows (li elements with detail links)
+            rows = soup.find_all('li', class_='row')
+            data_rows = [
+                r for r in rows
+                if r.find('a', href=lambda x: x and 'content=detail' in x)
+            ]
+
+            if not data_rows:
+                logger.info(f"Page {page}: No more participants")
+                break
+
+            page_count = len(data_rows)
+            logger.info(f"Page {page}: Processing {page_count} participants...")
+
+            for i, row in enumerate(data_rows, 1):
                 try:
-                    # 1. Get Link
-                    link_tag = row.find("a", href=lambda x: x and "content=detail" in x)
-                    if not link_tag: continue
-                    
+                    # Get participant link
+                    link_tag = row.find('a', href=lambda x: x and 'content=detail' in x)
+                    if not link_tag:
+                        continue
+
                     href = link_tag['href']
-                    # Construct profile link using current base_url
-                    if href.startswith("http"):
+                    if href.startswith('http'):
                         profile_link = href
-                    elif href.startswith("/"):
+                    elif href.startswith('/'):
                         profile_link = f"https://results.hyrox.com{href}"
                     else:
-                        # Relative URL - append to base_url
                         profile_link = f"{self.base_url}{href}"
 
-                    # 2. Get Name (Try a few common classes)
+                    # Get name from list view
                     name = "Unknown"
-                    name_div = row.find(class_="type-fullname") or row.find(class_="f-__fullname_last_first")
+                    name_div = (
+                        row.find(class_='type-fullname') or
+                        row.find(class_='f-__fullname_last_first')
+                    )
                     if name_div:
                         name = name_div.get_text(strip=True)
 
-                    # 3. Deep Dive
-                    splits = self.parse_splits(profile_link)
-                    
-                    if splits:
+                    # Scrape detail page
+                    details = self.parse_participant_details(profile_link)
+
+                    if details:
                         record = {
-                            "event_id": event_id,
-                            "name": name,
-                            "link": profile_link,
-                            **splits
+                            'event_id': event_id,
+                            'name': name,
+                            'link': profile_link,
+                            **details
                         }
                         all_participants.append(record)
-                
+                        total_scraped += 1
+
+                        # Progress logging every 25 participants
+                        if total_scraped % 25 == 0:
+                            logger.info(f"  ... scraped {total_scraped} participants")
+
                 except Exception as e:
-                    logging.error(f"Error parsing row: {e}")
+                    logger.warning(f"Error parsing participant: {e}")
                     continue
 
             page += 1
             if limit_pages and page > limit_pages:
                 break
-            time.sleep(1)
 
+            time.sleep(1)  # Rate limiting
+
+        logger.info(f"Completed: {total_scraped} participants scraped")
         return pd.DataFrame(all_participants)
 
     def scrape_multiple_events(
@@ -237,16 +351,26 @@ class HyroxScraper:
 
         all_data = []
         failed_events = []
+        total_participants = 0
 
-        for event in tqdm(events, desc="Scraping events"):
-            # Check if we already have this event scraped
+        logger.info(f"=" * 60)
+        logger.info(f"BATCH SCRAPE: {len(events)} events")
+        logger.info(f"=" * 60)
+
+        for idx, event in enumerate(events, 1):
+            # Check for cached data (resumability)
             safe_name = event.name.replace(" ", "_").replace("/", "-")
             event_file = os.path.join(output_dir, f"{safe_name}.csv")
 
+            logger.info(f"")
+            logger.info(f"[{idx}/{len(events)}] {event.name}")
+
             if save_intermediate and os.path.exists(event_file):
-                logging.info(f"Loading cached data for {event.name}")
+                logger.info(f"  -> Loading from cache: {event_file}")
                 df = pd.read_csv(event_file)
                 all_data.append(df)
+                total_participants += len(df)
+                logger.info(f"  -> Loaded {len(df)} participants (total: {total_participants})")
                 continue
 
             # Switch season if needed
@@ -257,94 +381,99 @@ class HyroxScraper:
             full_event_id = f"{division.value}_{event.event_id}"
 
             try:
-                logging.info(f"Scraping {event.name} (ID: {full_event_id})")
                 df = self.scrape_event(full_event_id)
 
                 if df.empty:
-                    logging.warning(f"No data returned for {event.name}")
+                    logger.warning(f"  -> No data returned")
                     failed_events.append(event.name)
                     continue
 
                 # Add event metadata
-                df["event_name"] = event.name
-                df["season"] = event.season
-                df["location"] = event.location
+                df['event_name'] = event.name
+                df['season'] = event.season
+                df['location'] = event.location
 
-                # Validate data
+                # Validate and clean
                 df = self._validate_event_data(df)
 
                 all_data.append(df)
+                total_participants += len(df)
 
                 # Save intermediate results
                 if save_intermediate:
                     df.to_csv(event_file, index=False)
-                    logging.info(f"Saved {len(df)} rows to {event_file}")
+                    logger.info(f"  -> Saved {len(df)} participants to {event_file}")
+
+                logger.info(f"  -> Total so far: {total_participants}")
 
             except Exception as e:
-                logging.error(f"Failed to scrape {event.name}: {e}")
+                logger.error(f"  -> Failed: {e}")
                 failed_events.append(event.name)
                 continue
 
+        logger.info(f"")
+        logger.info(f"=" * 60)
+        logger.info(f"SCRAPE COMPLETE")
+        logger.info(f"=" * 60)
+        logger.info(f"Total participants: {total_participants}")
+        logger.info(f"Successful events: {len(events) - len(failed_events)}/{len(events)}")
+
         if failed_events:
-            logging.warning(f"Failed events: {failed_events}")
+            logger.warning(f"Failed events: {failed_events}")
 
         if not all_data:
-            logging.error("No data scraped from any event")
+            logger.error("No data scraped from any event")
             return pd.DataFrame()
 
         combined = pd.concat(all_data, ignore_index=True)
-        logging.info(f"Total participants scraped: {len(combined)}")
-
         return combined
 
     def _validate_event_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Validate and clean scraped event data.
 
-        Args:
-            df: Raw scraped DataFrame
-
-        Returns:
-            Cleaned DataFrame with invalid rows removed
+        Removes rows with:
+        - Missing critical split data
+        - Zero total time
+        - Unreasonable times (< 30 min or > 4 hours)
         """
         original_len = len(df)
 
-        # Check for required columns
-        required_cols = ["run_1", "station_1", "total_time"]
-        missing_cols = [c for c in required_cols if c not in df.columns]
-        if missing_cols:
-            logging.warning(f"Missing columns: {missing_cols}")
-            return df
+        # Remove rows with zero overall time
+        if 'overall_time' in df.columns:
+            df = df[df['overall_time'] > 0]
 
-        # Remove rows with missing critical data
-        df = df.dropna(subset=["total_time"])
-
-        # Remove rows where total_time is zero or negative
-        # (timedelta strings that start with "0 days 00:00:00")
-        df = df[df["total_time"] != "0 days 00:00:00"]
+        # Remove unreasonable times (< 30 min or > 4 hours)
+        if 'overall_time' in df.columns:
+            min_time = 30 * 60   # 30 minutes
+            max_time = 4 * 3600  # 4 hours
+            df = df[(df['overall_time'] >= min_time) & (df['overall_time'] <= max_time)]
 
         removed = original_len - len(df)
         if removed > 0:
-            logging.info(f"Removed {removed} invalid rows")
+            logger.info(f"  -> Removed {removed} invalid rows")
 
         return df
 
 
 if __name__ == "__main__":
-    # Test single event scraping
+    # Test single participant scrape
     scraper = HyroxScraper(season=8)
-    target_event = "H_LR3MS4JI11FA"  # Stockholm Open
 
-    print(f"Starting test scrape for: {target_event}")
-    df = scraper.scrape_event(target_event, limit_pages=1)
+    # Test with Stockholm Open
+    test_url = (
+        "https://results.hyrox.com/season-8/"
+        "?content=detail&fpid=list&pid=list&idp=LR3MS4JI44A6FC"
+        "&lang=EN_CAP&event=H_LR3MS4JI11FA&num_results=100"
+        "&pidp=start&ranking=time_finish_netto&search_event=H_LR3MS4JI11FA"
+    )
 
-    if not df.empty:
-        print(f"Success! Scraped {len(df)} rows.")
-        print(df.columns.tolist())
-        print(df.head(2))
+    print("Testing single participant scrape...")
+    details = scraper.parse_participant_details(test_url)
 
-        output_file = "data/raw/test_scrape_v2.csv"
-        df.to_csv(output_file, index=False)
-        print(f"Saved to {output_file}")
+    if details:
+        print("\nExtracted fields:")
+        for key, value in sorted(details.items()):
+            print(f"  {key}: {value}")
     else:
-        print("No data returned. Check the event ID and connection.")
+        print("Failed to extract data")

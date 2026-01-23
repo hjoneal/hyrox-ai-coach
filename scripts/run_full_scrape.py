@@ -1,4 +1,4 @@
-"""Run full scrape for all 25 events and generate feature dataset."""
+"""Run full scrape for all events and generate feature dataset."""
 
 import sys
 sys.path.insert(0, "/Users/harryneal/Documents/personal_projects/hyrox-ai-coach")
@@ -37,6 +37,15 @@ raw_output = "data/raw/hyrox_combined.csv"
 df.to_csv(raw_output, index=False)
 print(f"Saved raw data to {raw_output}")
 
+# Show sample of new columns
+print(f"\nNew columns in data:")
+new_cols = ['bib_number', 'age_group', 'nationality', 'rank_overall', 'rank_age_group',
+            'bonus_time', 'penalty_time', 'roxzone_time', 'best_run_lap']
+for col in new_cols:
+    if col in df.columns:
+        non_empty = df[col].notna().sum() if df[col].dtype == 'object' else (df[col] > 0).sum()
+        print(f"  {col}: {non_empty} non-empty values")
+
 # Run feature engineering
 print(f"\n{'='*60}")
 print("FEATURE ENGINEERING")
@@ -49,7 +58,7 @@ print(f"Generated {len(engineer.get_feature_names())} features")
 
 # Get target stats
 target = engineer.get_target(df_features)
-print(f"\nTarget (race_time_seconds) stats:")
+print(f"\nTarget (overall_time) stats:")
 print(f"  Count: {len(target)}")
 print(f"  Mean: {target.mean():.0f} seconds ({target.mean()/60:.1f} minutes)")
 print(f"  Std: {target.std():.0f} seconds")
@@ -69,10 +78,6 @@ correlations = validator.check_target_correlation(df_features, feature_names)
 print("\nTop 10 Feature-Target Correlations:")
 print(correlations.head(10)[['feature', 'pearson_corr', 'spearman_corr']].to_string(index=False))
 
-# High multicollinearity
-high_corr = validator.check_multicollinearity(df_features, feature_names)
-print(f"\nHighly correlated feature pairs (>0.9): {len(high_corr)}")
-
 # Save processed data
 processed_output = "data/processed/hyrox_features.csv"
 df_features.to_csv(processed_output, index=False)
@@ -81,5 +86,5 @@ print(f"\nSaved processed features to {processed_output}")
 print(f"\n{'='*60}")
 print("SCRAPING COMPLETE")
 print("="*60)
-print(f"Raw data: {raw_output} ({len(df)} rows)")
+print(f"Raw data: {raw_output} ({len(df)} rows, {len(df.columns)} columns)")
 print(f"Features: {processed_output} ({len(df_features.columns)} columns)")

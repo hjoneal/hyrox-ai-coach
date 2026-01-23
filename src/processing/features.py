@@ -2,107 +2,17 @@
 Feature engineering pipeline for Hyrox performance prediction.
 
 This module provides utilities for:
-- Converting time strings to numeric seconds
 - Extracting run-based features (consistency, acceleration, pacing)
 - Extracting station-based features (grouped by type, fatigue indicators)
 - Extracting overall pacing features
+
+Note: Assumes time columns are already in seconds (integer format).
 """
 
 import pandas as pd
 import numpy as np
 from typing import List, Tuple
 from scipy import stats
-
-
-# =============================================================================
-# Time Conversion Utilities
-# =============================================================================
-
-def parse_timedelta_string(time_str: str) -> float:
-    """
-    Convert timedelta string '0 days 00:04:30' to seconds.
-
-    Args:
-        time_str: String in format '0 days HH:MM:SS' or 'HH:MM:SS'
-
-    Returns:
-        Total seconds as float, or NaN if invalid
-
-    Examples:
-        >>> parse_timedelta_string('0 days 00:04:30')
-        270.0
-        >>> parse_timedelta_string('0 days 01:15:30')
-        4530.0
-    """
-    if pd.isna(time_str) or time_str == "" or time_str is None:
-        return np.nan
-
-    time_str = str(time_str).strip()
-
-    # Handle "0 days HH:MM:SS" format
-    if "days" in time_str:
-        parts = time_str.split(" ")
-        try:
-            days = int(parts[0])
-            time_part = parts[2] if len(parts) >= 3 else "00:00:00"
-        except (ValueError, IndexError):
-            return np.nan
-    else:
-        days = 0
-        time_part = time_str
-
-    try:
-        time_components = time_part.split(":")
-        if len(time_components) == 3:
-            h, m, s = map(int, time_components)
-        elif len(time_components) == 2:
-            h = 0
-            m, s = map(int, time_components)
-        else:
-            return np.nan
-
-        return float(days * 86400 + h * 3600 + m * 60 + s)
-    except (ValueError, AttributeError):
-        return np.nan
-
-
-def convert_time_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert all time columns from string to seconds.
-
-    Identifies columns containing 'run_', 'station_', 'total_', or 'time'
-    and creates new columns with '_seconds' suffix.
-
-    Args:
-        df: DataFrame with time string columns
-
-    Returns:
-        DataFrame with additional _seconds columns
-    """
-    df_converted = df.copy()
-
-    # Identify time columns
-    time_cols = [
-        c for c in df.columns
-        if any(x in c.lower() for x in ["run_", "station_", "total_"])
-        and "_seconds" not in c
-    ]
-
-    for col in time_cols:
-        new_col = f"{col}_seconds"
-        df_converted[new_col] = df[col].apply(parse_timedelta_string)
-
-    # Calculate actual race time from splits (more reliable than total_time)
-    run_cols = [f"run_{i}_seconds" for i in range(1, 9)]
-    station_cols = [f"station_{i}_seconds" for i in range(1, 9)]
-
-    if all(c in df_converted.columns for c in run_cols + station_cols):
-        df_converted["race_time_seconds"] = (
-            df_converted[run_cols].sum(axis=1) +
-            df_converted[station_cols].sum(axis=1)
-        )
-
-    return df_converted
 
 
 # =============================================================================
@@ -118,38 +28,42 @@ class RunFeatureExtractor:
         Extract features from 8 running segments.
 
         Args:
-            df: DataFrame with run_1_seconds through run_8_seconds columns
+            df: DataFrame with run_1 through run_8 columns (in seconds)
 
         Returns:
             DataFrame with run features
         """
-        run_cols = [f"run_{i}_seconds" for i in range(1, 9)]
+        run_cols = [f"run_{i}" for i in range(1, 9)]
 
         # Verify columns exist
         missing = [c for c in run_cols if c not in df.columns]
         if missing:
             raise ValueError(f"Missing run columns: {missing}")
 
-        runs = df[run_cols].values
+        runs = df[run_cols].values.astype(float)
         features = pd.DataFrame(index=df.index)
 
         # Basic statistics
-        features["run_mean_seconds"] = np.nanmean(runs, axis=1)
-        features["run_std_seconds"] = np.nanstd(runs, axis=1)
-        features["run_cv"] = features["run_std_seconds"] / features["run_mean_seconds"]
+        features["run_mean"] = np.nanmean(runs, axis=1)
+        features["run_std"] = np.nanstd(runs, axis=1)
+        features["run_cv"] = features["run_std"] / features["run_mean"]
 
         # Half splits (fatigue indicator)
         first_half = np.nanmean(runs[:, :4], axis=1)
         second_half = np.nanmean(runs[:, 4:], axis=1)
         features["run_first_half_avg"] = first_half
         features["run_second_half_avg"] = second_half
-        features["run_acceleration"] = (second_half - first_half) / first_half
+
+        # Avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            features["run_acceleration"] = (second_half - first_half) / first_half
+            features["run_acceleration"] = features["run_acceleration"].replace([np.inf, -np.inf], np.nan)
 
         # Trend analysis (linear regression slope)
         x = np.arange(8)
         slopes = []
         for row in runs:
-            if np.any(np.isnan(row)):
+            if np.any(np.isnan(row)) or np.any(row == 0):
                 slopes.append(np.nan)
             else:
                 slope, _ = np.polyfit(x, row, 1)
@@ -194,48 +108,50 @@ class StationFeatureExtractor:
         Extract features from 8 workout stations.
 
         Args:
-            df: DataFrame with station_1_seconds through station_8_seconds columns
+            df: DataFrame with station_1 through station_8 columns (in seconds)
 
         Returns:
             DataFrame with station features
         """
-        station_cols = [f"station_{i}_seconds" for i in range(1, 9)]
+        station_cols = [f"station_{i}" for i in range(1, 9)]
 
         # Verify columns exist
         missing = [c for c in station_cols if c not in df.columns]
         if missing:
             raise ValueError(f"Missing station columns: {missing}")
 
-        stations = df[station_cols].values
+        stations = df[station_cols].values.astype(float)
         features = pd.DataFrame(index=df.index)
 
         # Basic statistics
-        features["station_mean_seconds"] = np.nanmean(stations, axis=1)
-        features["station_std_seconds"] = np.nanstd(stations, axis=1)
-        features["station_cv"] = (
-            features["station_std_seconds"] / features["station_mean_seconds"]
-        )
+        features["station_mean"] = np.nanmean(stations, axis=1)
+        features["station_std"] = np.nanstd(stations, axis=1)
+        features["station_cv"] = features["station_std"] / features["station_mean"]
 
         # Type-based groupings
-        cardio_cols = [f"station_{i}_seconds" for i in StationFeatureExtractor.CARDIO_STATIONS]
-        strength_cols = [f"station_{i}_seconds" for i in StationFeatureExtractor.STRENGTH_STATIONS]
-        endurance_cols = [f"station_{i}_seconds" for i in StationFeatureExtractor.ENDURANCE_STATIONS]
+        cardio_cols = [f"station_{i}" for i in StationFeatureExtractor.CARDIO_STATIONS]
+        strength_cols = [f"station_{i}" for i in StationFeatureExtractor.STRENGTH_STATIONS]
+        endurance_cols = [f"station_{i}" for i in StationFeatureExtractor.ENDURANCE_STATIONS]
 
         features["cardio_time"] = df[cardio_cols].sum(axis=1)
         features["strength_time"] = df[strength_cols].sum(axis=1)
         features["endurance_time"] = df[endurance_cols].sum(axis=1)
 
         total_station = np.nansum(stations, axis=1)
-        features["cardio_ratio"] = features["cardio_time"] / total_station
-        features["strength_ratio"] = features["strength_time"] / total_station
-        features["endurance_ratio"] = features["endurance_time"] / total_station
+        with np.errstate(divide='ignore', invalid='ignore'):
+            features["cardio_ratio"] = features["cardio_time"] / total_station
+            features["strength_ratio"] = features["strength_time"] / total_station
+            features["endurance_ratio"] = features["endurance_time"] / total_station
 
         # Fatigue indicators
         first_half = np.nanmean(stations[:, :4], axis=1)
         second_half = np.nanmean(stations[:, 4:], axis=1)
         features["station_first_half_avg"] = first_half
         features["station_second_half_avg"] = second_half
-        features["station_fatigue_index"] = second_half / first_half
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            features["station_fatigue_index"] = second_half / first_half
+            features["station_fatigue_index"] = features["station_fatigue_index"].replace([np.inf, -np.inf], np.nan)
 
         # Extremes
         features["worst_station_idx"] = np.nanargmax(stations, axis=1) + 1
@@ -265,55 +181,41 @@ class PacingFeatureExtractor:
         features = pd.DataFrame(index=df.index)
 
         # Time ratios
-        if "total_run_seconds" in df.columns and "total_stations_seconds" in df.columns:
-            features["run_station_ratio"] = (
-                df["total_run_seconds"] / df["total_stations_seconds"]
-            )
+        if "total_run" in df.columns and "total_stations" in df.columns:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                features["run_station_ratio"] = df["total_run"] / df["total_stations"]
+                features["run_station_ratio"] = features["run_station_ratio"].replace([np.inf, -np.inf], np.nan)
 
         # Roxzone (transition) time
-        if "station_0_seconds" in df.columns:
-            features["roxzone_seconds"] = df["station_0_seconds"]
-        elif all(c in df.columns for c in ["total_time_seconds", "total_run_seconds", "total_stations_seconds"]):
-            features["roxzone_seconds"] = (
-                df["total_time_seconds"] -
-                df["total_run_seconds"] -
-                df["total_stations_seconds"]
-            )
+        if "roxzone_time" in df.columns:
+            features["roxzone"] = df["roxzone_time"]
 
-        if "roxzone_seconds" in features.columns and "total_time_seconds" in df.columns:
-            features["roxzone_ratio"] = features["roxzone_seconds"] / df["total_time_seconds"]
+            if "overall_time" in df.columns:
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    features["roxzone_ratio"] = df["roxzone_time"] / df["overall_time"]
 
         # Quarter analysis
-        first_q_cols = [
-            "run_1_seconds", "station_1_seconds",
-            "run_2_seconds", "station_2_seconds"
-        ]
-        last_q_cols = [
-            "run_7_seconds", "station_7_seconds",
-            "run_8_seconds", "station_8_seconds"
-        ]
+        first_q_cols = ["run_1", "station_1", "run_2", "station_2"]
+        last_q_cols = ["run_7", "station_7", "run_8", "station_8"]
 
         if all(c in df.columns for c in first_q_cols + last_q_cols):
             features["first_quarter_time"] = df[first_q_cols].sum(axis=1)
             features["last_quarter_time"] = df[last_q_cols].sum(axis=1)
 
-            if "total_time_seconds" in df.columns:
-                features["first_quarter_pct"] = (
-                    features["first_quarter_time"] / df["total_time_seconds"]
-                )
-                features["last_quarter_pct"] = (
-                    features["last_quarter_time"] / df["total_time_seconds"]
-                )
+            if "overall_time" in df.columns:
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    features["first_quarter_pct"] = features["first_quarter_time"] / df["overall_time"]
+                    features["last_quarter_pct"] = features["last_quarter_time"] / df["overall_time"]
 
         # Positive/negative split analysis
-        run_cols = [f"run_{i}_seconds" for i in range(1, 9)]
-        station_cols = [f"station_{i}_seconds" for i in range(1, 9)]
+        run_cols = [f"run_{i}" for i in range(1, 9)]
+        station_cols = [f"station_{i}" for i in range(1, 9)]
 
         if all(c in df.columns for c in run_cols + station_cols):
-            first_half_runs = df[[f"run_{i}_seconds" for i in range(1, 5)]].sum(axis=1)
-            first_half_stations = df[[f"station_{i}_seconds" for i in range(1, 5)]].sum(axis=1)
-            second_half_runs = df[[f"run_{i}_seconds" for i in range(5, 9)]].sum(axis=1)
-            second_half_stations = df[[f"station_{i}_seconds" for i in range(5, 9)]].sum(axis=1)
+            first_half_runs = df[[f"run_{i}" for i in range(1, 5)]].sum(axis=1)
+            first_half_stations = df[[f"station_{i}" for i in range(1, 5)]].sum(axis=1)
+            second_half_runs = df[[f"run_{i}" for i in range(5, 9)]].sum(axis=1)
+            second_half_stations = df[[f"station_{i}" for i in range(5, 9)]].sum(axis=1)
 
             first_half_total = first_half_runs + first_half_stations
             second_half_total = second_half_runs + second_half_stations
@@ -322,10 +224,13 @@ class PacingFeatureExtractor:
             features["split_difference"] = second_half_total - first_half_total
 
         # Finish strength (last 2 runs vs first 2 runs)
-        if all(c in df.columns for c in ["run_1_seconds", "run_2_seconds", "run_7_seconds", "run_8_seconds"]):
-            last_2_runs = df[["run_7_seconds", "run_8_seconds"]].mean(axis=1)
-            first_2_runs = df[["run_1_seconds", "run_2_seconds"]].mean(axis=1)
-            features["finish_strength"] = (last_2_runs - first_2_runs) / first_2_runs
+        if all(c in df.columns for c in ["run_1", "run_2", "run_7", "run_8"]):
+            last_2_runs = df[["run_7", "run_8"]].mean(axis=1)
+            first_2_runs = df[["run_1", "run_2"]].mean(axis=1)
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                features["finish_strength"] = (last_2_runs - first_2_runs) / first_2_runs
+                features["finish_strength"] = features["finish_strength"].replace([np.inf, -np.inf], np.nan)
 
         return features
 
@@ -338,7 +243,7 @@ class HyroxFeatureEngineer:
     """
     Main feature engineering pipeline for Hyrox finish time prediction.
 
-    Combines time conversion, run features, station features, and pacing features
+    Combines run features, station features, and pacing features
     into a single transform pipeline.
     """
 
@@ -352,26 +257,28 @@ class HyroxFeatureEngineer:
         """
         Full feature engineering pipeline.
 
-        Steps:
-        1. Convert time strings to seconds
-        2. Extract run features
-        3. Extract station features
-        4. Extract pacing features
-        5. Combine and return feature matrix
-
         Args:
-            df: Raw DataFrame with time string columns
+            df: DataFrame with time columns in seconds
 
         Returns:
             DataFrame with original columns plus engineered features
         """
-        # Step 1: Convert times
-        df_converted = convert_time_columns(df)
+        df_copy = df.copy()
 
-        # Step 2-4: Extract feature groups
-        run_features = self.run_extractor.extract(df_converted)
-        station_features = self.station_extractor.extract(df_converted)
-        pacing_features = self.pacing_extractor.extract(df_converted)
+        # Calculate race_time from splits if not present
+        run_cols = [f"run_{i}" for i in range(1, 9)]
+        station_cols = [f"station_{i}" for i in range(1, 9)]
+
+        if all(c in df_copy.columns for c in run_cols + station_cols):
+            df_copy["race_time"] = (
+                df_copy[run_cols].sum(axis=1) +
+                df_copy[station_cols].sum(axis=1)
+            )
+
+        # Extract feature groups
+        run_features = self.run_extractor.extract(df_copy)
+        station_features = self.station_extractor.extract(df_copy)
+        pacing_features = self.pacing_extractor.extract(df_copy)
 
         # Store feature names
         self._feature_names = (
@@ -380,9 +287,9 @@ class HyroxFeatureEngineer:
             list(pacing_features.columns)
         )
 
-        # Step 5: Combine
+        # Combine
         feature_df = pd.concat([
-            df_converted,
+            df_copy,
             run_features,
             station_features,
             pacing_features
@@ -398,21 +305,19 @@ class HyroxFeatureEngineer:
         """
         Extract target variable (race time in seconds).
 
-        Uses race_time_seconds (calculated from splits) as the target,
-        which is more reliable than total_time from the HTML.
-
         Args:
-            df: DataFrame with race_time_seconds column
+            df: DataFrame with overall_time or race_time column
 
         Returns:
             Series containing target values
         """
-        if "race_time_seconds" in df.columns:
-            return df["race_time_seconds"]
-        elif "total_time_seconds" in df.columns:
-            return df["total_time_seconds"]
+        # Prefer overall_time (from HTML), fallback to calculated race_time
+        if "overall_time" in df.columns:
+            return df["overall_time"]
+        elif "race_time" in df.columns:
+            return df["race_time"]
         else:
-            raise ValueError("No time column found. Run fit_transform first.")
+            raise ValueError("No time column found. Ensure data has 'overall_time' or 'race_time'.")
 
 
 # =============================================================================
@@ -461,7 +366,7 @@ class FeatureValidator:
     def check_target_correlation(
         df: pd.DataFrame,
         feature_cols: List[str],
-        target_col: str = "race_time_seconds"
+        target_col: str = "overall_time"
     ) -> pd.DataFrame:
         """
         Check correlation between features and target.
@@ -520,7 +425,6 @@ class FeatureValidator:
         Returns:
             List of (feature1, feature2, correlation) tuples
         """
-        # Filter to existing columns
         valid_cols = [c for c in feature_cols if c in df.columns]
         if len(valid_cols) < 2:
             return []
