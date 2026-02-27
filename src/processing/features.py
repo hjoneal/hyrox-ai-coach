@@ -253,6 +253,12 @@ class HyroxFeatureEngineer:
         self.pacing_extractor = PacingFeatureExtractor()
         self._feature_names = []
 
+    # Metadata columns to preserve from input through to output
+    METADATA_COLS = [
+        'division_code', 'division_name', 'gender_filter',
+        'event_name', 'season', 'location',
+    ]
+
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Full feature engineering pipeline.
@@ -261,7 +267,9 @@ class HyroxFeatureEngineer:
             df: DataFrame with time columns in seconds
 
         Returns:
-            DataFrame with original columns plus engineered features
+            DataFrame with original columns plus engineered features.
+            Metadata columns (division_code, division_name, gender_filter, etc.)
+            are preserved from the input if present.
         """
         df_copy = df.copy()
 

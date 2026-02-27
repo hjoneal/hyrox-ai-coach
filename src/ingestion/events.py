@@ -1,7 +1,7 @@
 """
 Event configuration for Hyrox data scraping.
 
-Contains curated event IDs from seasons 5-6 for Open division scraping.
+Contains curated event IDs from seasons 5-8 for Open and Pro Doubles division scraping.
 """
 
 from dataclasses import dataclass
@@ -13,11 +13,24 @@ class Division(Enum):
     """Hyrox competition divisions."""
     OPEN = "H"
     PRO = "HPRO"
+    PRO_DOUBLES = "HDP"
     ELITE = "HE"
     DOUBLES = "HD"
     RELAY = "HMR"
     GORUCK = "HG"
     GORUCK_DOUBLES = "HDG"
+
+    @property
+    def is_doubles(self) -> bool:
+        """Whether this division is a doubles category."""
+        return self in (Division.DOUBLES, Division.PRO_DOUBLES, Division.GORUCK_DOUBLES)
+
+
+class Gender(Enum):
+    """Gender filter for results pages."""
+    ALL = ""
+    MEN = "M"
+    WOMEN = "W"
 
 
 @dataclass
@@ -62,8 +75,27 @@ SEASON_6_EVENTS: List[HyroxEventConfig] = [
     HyroxEventConfig("JGDMS4JI58D", 6, "S6 Singapore 2023", "Singapore"),
 ]
 
+# Season 7 Events (2024)
+SEASON_7_EVENTS: List[HyroxEventConfig] = [
+    HyroxEventConfig("LR3MS4JI11FA", 8, "S7 Stockholm 2024", "Stockholm"),
+    HyroxEventConfig("LR3MS4JI1213", 8, "S7 Rimini 2024", "Rimini"),
+    HyroxEventConfig("LR3MS4JI126C", 8, "S7 Malaga 2024", "Malaga"),
+    HyroxEventConfig("LR3MS4JI12C5", 8, "S7 Manchester 2024", "Manchester"),
+    HyroxEventConfig("LR3MS4JI131E", 8, "S7 Cologne 2024", "Cologne"),
+]
+
+# Season 8 Events (2024-2025)
+SEASON_8_EVENTS: List[HyroxEventConfig] = [
+    HyroxEventConfig("LR3MS4JI1377", 8, "S8 Amsterdam 2024", "Amsterdam"),
+    HyroxEventConfig("LR3MS4JI13D0", 8, "S8 London 2024", "London"),
+    HyroxEventConfig("LR3MS4JI1429", 8, "S8 Hamburg 2024", "Hamburg"),
+    HyroxEventConfig("LR3MS4JI1482", 8, "S8 Rome 2025", "Rome"),
+]
+
 # All curated events for scraping
-ALL_EVENTS: List[HyroxEventConfig] = SEASON_5_EVENTS + SEASON_6_EVENTS
+ALL_EVENTS: List[HyroxEventConfig] = (
+    SEASON_5_EVENTS + SEASON_6_EVENTS + SEASON_7_EVENTS + SEASON_8_EVENTS
+)
 
 
 def get_events(

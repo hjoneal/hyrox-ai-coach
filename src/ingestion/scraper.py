@@ -14,7 +14,7 @@ import logging
 from typing import List, Optional, Dict, Any
 from tqdm import tqdm
 
-from src.ingestion.events import HyroxEventConfig, Division
+from src.ingestion.events import HyroxEventConfig, Division, Gender
 
 # Configure logging with more detail
 logging.basicConfig(
@@ -229,7 +229,8 @@ class HyroxScraper:
     def scrape_event(
         self,
         event_id: str,
-        limit_pages: Optional[int] = None
+        limit_pages: Optional[int] = None,
+        gender: Optional[Gender] = None
     ) -> pd.DataFrame:
         """
         Scrape all participants from a single event.
@@ -237,6 +238,7 @@ class HyroxScraper:
         Args:
             event_id: Event ID (e.g., 'H_LR3MS4JI11FA')
             limit_pages: Maximum pages to scrape (None for all)
+            gender: Gender filter (None or Gender.ALL for no filter)
 
         Returns:
             DataFrame with all participant data
@@ -252,6 +254,8 @@ class HyroxScraper:
                 f"{self.base_url}?page={page}&event={event_id}"
                 f"&num_results=100&pid=list&pidp=start&ranking=time_finish_netto"
             )
+            if gender and gender.value:
+                url += f"&sex={gender.value}"
 
             html = self._get_html(url)
             if not html:
@@ -331,6 +335,7 @@ class HyroxScraper:
         self,
         events: List[HyroxEventConfig],
         division: Division = Division.OPEN,
+        gender: Gender = Gender.ALL,
         output_dir: str = "data/raw/events",
         save_intermediate: bool = True
     ) -> pd.DataFrame:
@@ -340,38 +345,52 @@ class HyroxScraper:
         Args:
             events: List of HyroxEventConfig objects to scrape
             division: Division to scrape (default: Open)
+            gender: Gender filter (default: ALL)
             output_dir: Directory for intermediate saves
             save_intermediate: Whether to save each event separately
 
         Returns:
             Combined DataFrame with all participants from all events
         """
+        # Organize cache by division to avoid collisions
+        division_dir = os.path.join(output_dir, division.name.lower())
         if save_intermediate:
-            os.makedirs(output_dir, exist_ok=True)
+            os.makedirs(division_dir, exist_ok=True)
 
         all_data = []
         failed_events = []
         total_participants = 0
 
         logger.info(f"=" * 60)
-        logger.info(f"BATCH SCRAPE: {len(events)} events")
+        logger.info(f"BATCH SCRAPE: {len(events)} events ({division.name}, gender={gender.name})")
         logger.info(f"=" * 60)
 
         for idx, event in enumerate(events, 1):
             # Check for cached data (resumability)
             safe_name = event.name.replace(" ", "_").replace("/", "-")
-            event_file = os.path.join(output_dir, f"{safe_name}.csv")
+            event_file = os.path.join(division_dir, f"{safe_name}.csv")
+
+            # Backward compat: for OPEN division, also check old flat path
+            old_flat_file = os.path.join(output_dir, f"{safe_name}.csv")
 
             logger.info(f"")
             logger.info(f"[{idx}/{len(events)}] {event.name}")
 
-            if save_intermediate and os.path.exists(event_file):
-                logger.info(f"  -> Loading from cache: {event_file}")
-                df = pd.read_csv(event_file)
-                all_data.append(df)
-                total_participants += len(df)
-                logger.info(f"  -> Loaded {len(df)} participants (total: {total_participants})")
-                continue
+            if save_intermediate:
+                if os.path.exists(event_file):
+                    logger.info(f"  -> Loading from cache: {event_file}")
+                    df = pd.read_csv(event_file)
+                    all_data.append(df)
+                    total_participants += len(df)
+                    logger.info(f"  -> Loaded {len(df)} participants (total: {total_participants})")
+                    continue
+                elif division == Division.OPEN and os.path.exists(old_flat_file):
+                    logger.info(f"  -> Loading from legacy cache: {old_flat_file}")
+                    df = pd.read_csv(old_flat_file)
+                    all_data.append(df)
+                    total_participants += len(df)
+                    logger.info(f"  -> Loaded {len(df)} participants (total: {total_participants})")
+                    continue
 
             # Switch season if needed
             if self.season != event.season:
@@ -381,7 +400,7 @@ class HyroxScraper:
             full_event_id = f"{division.value}_{event.event_id}"
 
             try:
-                df = self.scrape_event(full_event_id)
+                df = self.scrape_event(full_event_id, gender=gender)
 
                 if df.empty:
                     logger.warning(f"  -> No data returned")
@@ -392,9 +411,12 @@ class HyroxScraper:
                 df['event_name'] = event.name
                 df['season'] = event.season
                 df['location'] = event.location
+                df['division_code'] = division.value
+                df['division_name'] = division.name
+                df['gender_filter'] = gender.value
 
                 # Validate and clean
-                df = self._validate_event_data(df)
+                df = self._validate_event_data(df, division=division)
 
                 all_data.append(df)
                 total_participants += len(df)
@@ -428,14 +450,16 @@ class HyroxScraper:
         combined = pd.concat(all_data, ignore_index=True)
         return combined
 
-    def _validate_event_data(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _validate_event_data(
+        self, df: pd.DataFrame, division: Division = Division.OPEN
+    ) -> pd.DataFrame:
         """
         Validate and clean scraped event data.
 
         Removes rows with:
         - Missing critical split data
         - Zero total time
-        - Unreasonable times (< 30 min or > 4 hours)
+        - Unreasonable times (thresholds vary by division)
         """
         original_len = len(df)
 
@@ -443,10 +467,15 @@ class HyroxScraper:
         if 'overall_time' in df.columns:
             df = df[df['overall_time'] > 0]
 
-        # Remove unreasonable times (< 30 min or > 4 hours)
-        if 'overall_time' in df.columns:
+        # Division-specific time thresholds
+        if division in (Division.PRO_DOUBLES, Division.PRO):
+            min_time = 25 * 60   # 25 minutes (pro doubles teams are faster)
+            max_time = 3 * 3600  # 3 hours
+        else:
             min_time = 30 * 60   # 30 minutes
             max_time = 4 * 3600  # 4 hours
+
+        if 'overall_time' in df.columns:
             df = df[(df['overall_time'] >= min_time) & (df['overall_time'] <= max_time)]
 
         removed = original_len - len(df)
