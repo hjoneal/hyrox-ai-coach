@@ -36,4 +36,6 @@ A running record of decisions, rationale, and results — written as input to th
 
 **Actions:** removed empty placeholder modules (`src/agent/`, `app/`, `src/models/predictor.py`, boilerplate `main.py`), the obsolete LangGraph plan doc, and a stale `requirements.txt` that listed unused dependencies (langchain, chromadb, openai, streamlit). `pyproject.toml` + `uv.lock` are now the single source of dependency truth. Added modeling/EDA dependencies (scikit-learn, lightgbm, matplotlib, seaborn). README rewritten around the DS narrative.
 
+**Addendum:** repo renamed `hyrox-ai-coach` → `hyrox-performance-analytics` (GitHub + local) to match the repositioning; hardcoded absolute paths in `scripts/` replaced with `__file__`-relative paths. Known issue found during verification: `scripts/test_features.py` imports `parse_timedelta_string`, which no longer exists in `features.py` — pre-existing staleness, to be fixed in the Phase 1 audit.
+
 **Next:** Phase 1 — data audit + EDA. The audit determines downstream feasibility (gender composition of the OPEN scrape, missing/zero splits, DNF handling, duplicates, venue count adequacy for the hierarchical model).
