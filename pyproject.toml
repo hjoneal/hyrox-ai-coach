@@ -1,5 +1,5 @@
 [project]
-name = "hyrox-ai-coach"
+name = "hyrox-performance-analytics"
 version = "0.1.0"
 description = "Data-driven performance analysis of Hyrox race results: in-race finish time prediction, venue difficulty modeling, and pacing archetype clustering"
 readme = "README.md"

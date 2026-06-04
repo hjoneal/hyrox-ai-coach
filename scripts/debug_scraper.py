@@ -1,7 +1,8 @@
 """Debug script to check URL structure for different seasons."""
 
+import pathlib
 import sys
-sys.path.insert(0, "/Users/harryneal/Documents/personal_projects/hyrox-ai-coach")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import requests
 from bs4 import BeautifulSoup

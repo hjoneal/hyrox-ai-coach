@@ -48,7 +48,7 @@ Typical finish times range from **~55 minutes** (elite) to **2+ hours**. Each pe
 ## Project Structure
 
 ```
-hyrox-ai-coach/
+hyrox-performance-analytics/
 ├── src/
 │   ├── ingestion/
 │   │   ├── scraper.py      # Scraper for results.hyrox.com (division/gender aware)
@@ -72,8 +72,8 @@ hyrox-ai-coach/
 Requires Python 3.11+ and [uv](https://github.com/astral-sh/uv):
 
 ```bash
-git clone https://github.com/yourusername/hyrox-ai-coach.git
-cd hyrox-ai-coach
+git clone https://github.com/hjoneal/hyrox-performance-analytics.git
+cd hyrox-performance-analytics
 uv sync
 ```
 

@@ -1,7 +1,8 @@
 """Test script for the updated scraper with a few events."""
 
+import pathlib
 import sys
-sys.path.insert(0, "/Users/harryneal/Documents/personal_projects/hyrox-ai-coach")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from src.ingestion.scraper import HyroxScraper
 from src.ingestion.events import get_events, SEASON_5_EVENTS

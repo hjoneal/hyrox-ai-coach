@@ -5,8 +5,9 @@ if it returns valid Pro Doubles results. Reports which events are
 available for scraping.
 """
 
+import pathlib
 import sys
-sys.path.insert(0, "/Users/harryneal/Documents/personal_projects/hyrox-ai-coach")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import requests
 from bs4 import BeautifulSoup

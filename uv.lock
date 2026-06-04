@@ -581,7 +581,7 @@ wheels = [
 ]
 
 [[package]]
-name = "hyrox-ai-coach"
+name = "hyrox-performance-analytics"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

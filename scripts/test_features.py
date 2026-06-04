@@ -1,7 +1,8 @@
 """Test feature engineering pipeline on scraped data."""
 
+import pathlib
 import sys
-sys.path.insert(0, "/Users/harryneal/Documents/personal_projects/hyrox-ai-coach")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 from src.processing.features import (

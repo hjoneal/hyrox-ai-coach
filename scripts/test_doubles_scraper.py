@@ -4,8 +4,9 @@ Validates that the HDP division prefix with gender=M filter returns
 valid data with 8 runs + 8 stations before running a full scrape.
 """
 
+import pathlib
 import sys
-sys.path.insert(0, "/Users/harryneal/Documents/personal_projects/hyrox-ai-coach")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from src.ingestion.scraper import HyroxScraper
 from src.ingestion.events import SEASON_5_EVENTS, Division, Gender
