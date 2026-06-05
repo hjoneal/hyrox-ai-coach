@@ -39,8 +39,9 @@ Typical finish times range from **~55 minutes** (elite) to **2+ hours**. Each pe
 |-----------|--------|
 | Web scraper (official results, seasons 5–8, division/gender aware) | **Done** |
 | Combined OPEN dataset (~20.9k athletes, 24 events, S5–S6) | **Done** |
+| Gender/age/nationality recovery via list-page label scrape (99.99% labeled) | **Done** |
 | Feature engineering pipeline (run / station / pacing features) | **Done** |
-| Data audit + EDA | In progress |
+| Data audit + EDA ([report notebook 1](notebooks/Harry_Neal_Hyrox_1_data_acquisition_cleaning_eda.ipynb)), cleaning policy + clean modeling table | **Done** |
 | In-race finish time prediction (flagship) | Planned |
 | Venue difficulty model | Planned |
 | Pacing archetype clustering | Planned |
@@ -54,13 +55,17 @@ hyrox-performance-analytics/
 │   │   ├── scraper.py      # Scraper for results.hyrox.com (division/gender aware)
 │   │   └── events.py       # Event registry (seasons 5-8), Division/Gender enums
 │   ├── processing/
+│   │   ├── cleaning.py     # Cleaning policy (audit rules R1-R6, counted + logged)
 │   │   └── features.py     # Feature engineering (run, station, pacing extractors)
 │   └── models/             # Modeling code (Phase 2+)
 ├── scripts/
-│   ├── run_full_scrape.py  # Full OPEN dataset collection
-│   ├── test_scraper.py     # Scraper validation
-│   └── test_features.py    # Feature pipeline validation
-├── notebooks/              # EDA and analysis notebooks
+│   ├── run_full_scrape.py        # Full OPEN dataset collection
+│   ├── scrape_gender_labels.py   # Light list-page label scrape (gender/age/nationality)
+│   ├── build_clean_dataset.py    # Raw + labels -> data/processed/hyrox_clean.csv
+│   ├── test_scraper.py           # Scraper validation
+│   └── test_features.py          # Feature pipeline validation
+├── notebooks/              # Project report notebook series (1 of 4: acquisition/cleaning/EDA)
+│   └── Harry_Neal_Hyrox_1_data_acquisition_cleaning_eda.ipynb
 ├── docs/
 │   └── PROJECT_LOG.md      # Running log of decisions and results
 ├── data/                   # (gitignored) raw scrapes and processed features
@@ -108,7 +113,7 @@ Engineered features cover run pacing (mean, variability, fatigue trend), station
 
 ## Roadmap
 
-- **Phase 1 — Data audit + EDA**: missing/zero splits, DNF policy, duplicates, field composition per event; documented cleaning policy and clean modeling table
+- **Phase 1 — Data audit + EDA** ✅: missing/zero splits, DNF policy, duplicates, field composition per event; gender recovered via label scrape; documented cleaning policy ([`src/processing/cleaning.py`](src/processing/cleaning.py)) and clean modeling table
 - **Phase 2 — In-race prediction**: per-checkpoint feature sets, naive extrapolation baseline, gradient-boosted models, leave-event-out CV, quantile/conformal prediction intervals, calibration analysis
 - **Phase 3 — Venue difficulty**: mixed-effects / Bayesian hierarchical model with venue random effects; field-strength confounding addressed explicitly
 - **Phase 4 — Pacing archetypes**: GMM over normalized split profiles, model selection via BIC, performance analysis stratified by finish-time band
