@@ -73,9 +73,22 @@ class HyroxScraper:
         self.base_url = f"https://results.hyrox.com/season-{season}/"
         self._init_session()
 
+    # results.hyrox.com returns 403 for the default python-requests
+    # User-Agent (observed 2026-06); browser-like headers are required.
+    REQUEST_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.9",
+    }
+
     def _init_session(self):
         """Initialize HTTP session."""
         try:
+            self.session.headers.update(self.REQUEST_HEADERS)
             self.session.get(self.base_url, timeout=10)
             logger.info(f"Session initialized: season-{self.season}")
         except Exception as e:
@@ -330,6 +343,103 @@ class HyroxScraper:
 
         logger.info(f"Completed: {total_scraped} participants scraped")
         return pd.DataFrame(all_participants)
+
+    def _get_list_field(self, row, class_name: str) -> str:
+        """Extract text from a list-page field, dropping the mobile label div.
+
+        List-row fields embed a label div (e.g. 'Total', 'Age Group', 'Nat')
+        shown only on small screens; extract it so only the value remains.
+        """
+        el = row.find(class_=class_name)
+        if not el:
+            return ''
+        el = el.__copy__()
+        for label in el.find_all(class_='list-label'):
+            label.extract()
+        text = el.get_text(strip=True)
+        return text if text not in ('-', '–', '--') else ''
+
+    def scrape_event_labels(
+        self,
+        event_id: str,
+        gender: Gender,
+        limit_pages: Optional[int] = None
+    ) -> pd.DataFrame:
+        """
+        Scrape list pages only (no detail pages) for one gender.
+
+        Cheap label pass: ~1 request per 100 athletes instead of 1 per
+        athlete. Captures name, finish time, age group, and nationality,
+        intended to be joined back onto a detail-page scrape on
+        (event_id, name, finish time).
+
+        Args:
+            event_id: Full event ID including division prefix (e.g. 'H_...')
+            gender: Gender filter (MEN or WOMEN; required — an unfiltered
+                list carries no gender information)
+            limit_pages: Maximum pages to scrape (None for all)
+
+        Returns:
+            DataFrame with columns: event_id, name, finish_time,
+            age_group, nationality, gender, rank_gender
+        """
+        if gender not in (Gender.MEN, Gender.WOMEN):
+            raise ValueError("scrape_event_labels requires Gender.MEN or Gender.WOMEN")
+
+        page = 1
+        records = []
+
+        while True:
+            url = (
+                f"{self.base_url}?page={page}&event={event_id}"
+                f"&num_results=100&pid=list&pidp=start&ranking=time_finish_netto"
+                f"&sex={gender.value}"
+            )
+
+            html = self._get_html(url)
+            if not html:
+                break
+
+            soup = BeautifulSoup(html, 'html.parser')
+            rows = soup.find_all('li', class_='row')
+            data_rows = [
+                r for r in rows
+                if r.find('a', href=lambda x: x and 'content=detail' in x)
+            ]
+
+            if not data_rows:
+                break
+
+            for row in data_rows:
+                name = self._get_list_field(row, 'type-fullname')
+                if not name:
+                    continue
+                records.append({
+                    'event_id': event_id,
+                    'name': name,
+                    'finish_time': parse_time_to_seconds(
+                        self._get_list_field(row, 'type-time')
+                    ),
+                    'age_group': self._get_list_field(row, 'type-age_class'),
+                    'nationality': self._get_list_field(row, 'type-nation_flag'),
+                    'gender': gender.value,
+                    'rank_gender': self._get_list_field(row, 'place-primary'),
+                })
+
+            logger.info(f"  {event_id} sex={gender.value} page {page}: {len(data_rows)} rows")
+            page += 1
+            if limit_pages and page > limit_pages:
+                break
+            time.sleep(1)  # Rate limiting
+
+        df = pd.DataFrame(records)
+        if not df.empty:
+            # Some events render duplicate <li> rows for the same athlete
+            n_before = len(df)
+            df = df.drop_duplicates(ignore_index=True)
+            if len(df) < n_before:
+                logger.info(f"  Dropped {n_before - len(df)} duplicate list rows")
+        return df
 
     def scrape_multiple_events(
         self,
