@@ -42,7 +42,7 @@ Typical finish times range from **~55 minutes** (elite) to **2+ hours**. Each pe
 | Gender/age/nationality recovery via list-page label scrape (99.99% labeled) | **Done** |
 | Feature engineering pipeline (run / station / pacing features) | **Done** |
 | Data audit + EDA ([report notebook 1](notebooks/Harry_Neal_Hyrox_1_data_acquisition_cleaning_eda.ipynb)), cleaning policy + clean modeling table | **Done** |
-| In-race finish time prediction (flagship) | Planned |
+| In-race finish time prediction ([report notebook 2](notebooks/Harry_Neal_Hyrox_2_in_race_prediction.ipynb)): per-checkpoint quantile GBMs, leave-event-out CV, conformalized intervals | **Done** |
 | Venue difficulty model | Planned |
 | Pacing archetype clustering | Planned |
 
@@ -56,16 +56,20 @@ hyrox-performance-analytics/
 │   │   └── events.py       # Event registry (seasons 5-8), Division/Gender enums
 │   ├── processing/
 │   │   ├── cleaning.py     # Cleaning policy (audit rules R1-R6, counted + logged)
-│   │   └── features.py     # Feature engineering (run, station, pacing extractors)
-│   └── models/             # Modeling code (Phase 2+)
+│   │   ├── checkpoint_features.py  # Per-checkpoint (leakage-safe) feature sets
+│   │   └── features.py     # Whole-race feature engineering (post-race analyses)
+│   └── models/
+│       └── inrace.py       # Baseline, quantile GBMs, leave-event-out CV, CQR
 ├── scripts/
 │   ├── run_full_scrape.py        # Full OPEN dataset collection
 │   ├── scrape_gender_labels.py   # Light list-page label scrape (gender/age/nationality)
 │   ├── build_clean_dataset.py    # Raw + labels -> data/processed/hyrox_clean.csv
+│   ├── run_phase2_models.py      # LOEO experiment -> data/processed/phase2/ artifacts
 │   ├── test_scraper.py           # Scraper validation
 │   └── test_features.py          # Feature pipeline validation
-├── notebooks/              # Project report notebook series (1 of 4: acquisition/cleaning/EDA)
-│   └── Harry_Neal_Hyrox_1_data_acquisition_cleaning_eda.ipynb
+├── notebooks/              # Project report notebook series
+│   ├── Harry_Neal_Hyrox_1_data_acquisition_cleaning_eda.ipynb
+│   └── Harry_Neal_Hyrox_2_in_race_prediction.ipynb
 ├── docs/
 │   └── PROJECT_LOG.md      # Running log of decisions and results
 ├── data/                   # (gitignored) raw scrapes and processed features
@@ -114,7 +118,7 @@ Engineered features cover run pacing (mean, variability, fatigue trend), station
 ## Roadmap
 
 - **Phase 1 — Data audit + EDA** ✅: missing/zero splits, DNF policy, duplicates, field composition per event; gender recovered via label scrape; documented cleaning policy ([`src/processing/cleaning.py`](src/processing/cleaning.py)) and clean modeling table
-- **Phase 2 — In-race prediction**: per-checkpoint feature sets, naive extrapolation baseline, gradient-boosted models, leave-event-out CV, quantile/conformal prediction intervals, calibration analysis
+- **Phase 2 — In-race prediction** ✅: per-checkpoint feature sets, proportional-extrapolation baseline, quantile gradient boosting, leave-event-out CV, conformalized (CQR) 90% intervals — model beats baseline at 15/16 checkpoints; intervals calibrated on unseen events
 - **Phase 3 — Venue difficulty**: mixed-effects / Bayesian hierarchical model with venue random effects; field-strength confounding addressed explicitly
 - **Phase 4 — Pacing archetypes**: GMM over normalized split profiles, model selection via BIC, performance analysis stratified by finish-time band
 - **Phase 5 — Write-up**: headline figures, per-analysis summaries, limitations

@@ -95,3 +95,32 @@ Full audit in [report notebook 1](../notebooks/Harry_Neal_Hyrox_1_data_acquisiti
 4. Pacing archetypes + overall discussion (Phases 4–5)
 
 **Alternatives considered:** a single growing report notebook (rejected — three analyses would make it unreadably long); a hybrid headline-notebook linking to working notebooks (rejected — duplication, two sources of truth). The standalone `01_data_audit.ipynb` was folded into report notebook 1 and deleted for the same single-source-of-truth reason.
+
+## 2026-06-12 — Phase 2: in-race finish time prediction
+
+Full write-up in [report notebook 2](../notebooks/Harry_Neal_Hyrox_2_in_race_prediction.ipynb). Design decisions:
+
+- **One model per checkpoint (16), not one model with checkpoint as a feature.** Each checkpoint has a different admissible feature set ([`src/processing/checkpoint_features.py`](../src/processing/checkpoint_features.py)); a pooled model would force a shared representation and make the leakage boundary easy to violate silently. Cost is 16× the fits — acceptable (full LOEO experiment: 1,152 fits, ~8 min).
+- **Leakage rule made structural:** features at checkpoint k are built only from segments 1..k + gender/age group. Whole-race features from `features.py` (fatigue slope, finish strength, ±split) are excluded entirely; they return in Phase 4. Roxzone-so-far is *unobservable* mid-race (published only as a race total), so features use work-segment sums and the model maps to the finish clock.
+- **Quantile LightGBM (q05/q50/q95)** — q50 as point prediction (directly optimises MAE), outer pair as the nominal 90% interval. One family for point + uncertainty.
+- **Leave-event-out CV (24 folds)** with **event-grouped CQR**: 4 whole training events held out per fold as the conformal calibration set, so the correction reflects event shift, not within-event variation. Row-sampled calibration was rejected — it would calibrate against the wrong (easier) distribution.
+- **Baseline:** per-gender proportional extrapolation from cumulative work time (median fraction-complete denominators absorb roxzone implicitly).
+
+**Results (pooled over held-out events):**
+
+| checkpoint | baseline MAE | model MAE | improvement | CQR coverage (nominal 90%) | 90% width |
+|---|---|---|---|---|---|
+| after run 1 | 13.9 min | 11.0 min | **+20.7%** | 0.88 | 42.8 min |
+| after station 4 (~45%) | 3.3 min | 3.1 min | +6.2% | 0.89 | 11.8 min |
+| after run 7 | 2.7 min | 2.3 min | +14.7% | 0.89 | 8.9 min |
+| after station 8 | 1.4 min | 1.5 min | **−4.7%** | 0.89 | 5.7 min |
+
+Model beats baseline at **15/16 checkpoints** (4–21%); loses only at the final checkpoint, where the only unknown is roxzone and arithmetic wins — kept in the report as the honest shape of the problem. **Raw quantile intervals undercover at every checkpoint (0.79–0.86)** under event shift; event-grouped CQR repairs coverage to 0.88–0.90 throughout. Per-fold spread is well-behaved (no catastrophic event).
+
+**Artifacts:** `scripts/run_phase2_models.py` → `data/processed/phase2/` (predictions, per-checkpoint and per-fold metrics, calibration-event assignments). Notebook 2 loads artifacts; it does not re-train.
+
+**Caveats for the write-up:** predictions are conditional on finishing (finishers-only data); intervals are marginal across athletes, not per-athlete conditional; the early-race error and the raw-interval undercoverage both trace to between-event differences — which is exactly the Phase 3 question (venue effects as legal pre-race features).
+
+**Superseded:** `data/processed/hyrox_features.csv` (whole-race features built from pre-cleaning raw data) is now legacy — Phase 4 should rebuild from the clean table via `features.py` rather than reuse it.
+
+**Next:** Phase 3 — venue difficulty (hierarchical model, venue random effects, field-strength confounding).
